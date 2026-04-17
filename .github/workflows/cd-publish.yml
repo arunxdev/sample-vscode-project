@@ -86,21 +86,30 @@ jobs:
           PACKAGE_VERSION: ${{ steps.pkg.outputs.version }}
         run: |
           set -euo pipefail
+          TMP_OUT=$(mktemp)
           TMP_ERR=$(mktemp)
           set +e
-          RAW=$(vsce show "$EXTENSION_ID" --json 2>"$TMP_ERR")
+          vsce show "$EXTENSION_ID" --json >"$TMP_OUT" 2>"$TMP_ERR"
           RC=$?
           set -e
           ERR=$(cat "$TMP_ERR"); rm -f "$TMP_ERR"
+          RAW=$(sed -n '/^[[:space:]]*[{[]/,$p' "$TMP_OUT")
+          rm -f "$TMP_OUT"
 
           if [ $RC -ne 0 ] || [ -z "$RAW" ]; then
             if echo "$ERR" | grep -qiE "not found|could not be found|no extension"; then
-              echo "Extension '$EXTENSION_ID' not on marketplace yet (first publish). OK."
+              echo "Extension '$EXTENSION_ID' not on marketplace yet (first publish)."
               exit 0
             fi
             echo "::error::vsce show failed for '$EXTENSION_ID': $ERR"
             exit 1
           fi
+
+          if ! echo "$RAW" | jq -e . >/dev/null 2>&1; then
+            echo "::error::vsce show returned non-JSON output for '$EXTENSION_ID': $RAW"
+            exit 1
+          fi
+
           PUBLISHED=$(echo "$RAW" | jq -r '.versions[].version')
           if echo "$PUBLISHED" | grep -Fxq "$PACKAGE_VERSION"; then
             echo "::error::Version $PACKAGE_VERSION already published to marketplace for $EXTENSION_ID"
