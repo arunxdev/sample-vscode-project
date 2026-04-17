@@ -1,0 +1,41 @@
+{
+  "name": "test-gowtham-app",
+  "displayName": "Test Gowtham App",
+  "description": "Hello World VS Code extension to test publishing",
+  "version": "0.0.1",
+  "publisher": "santhoshKumar-test-vscode",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:sample-hello.helloWorld"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sample-hello.helloWorld",
+        "title": "Test Gowtham App: Hello World"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0",
+    "vsce": "^2.15.0"
+  }
+}
+
+
