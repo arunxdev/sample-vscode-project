@@ -121,7 +121,7 @@ jobs:
 
       - name: Publish to VS Code Marketplace
         env:
-          VSCE_PAT: ${{ secrets.GITLENS_VSCODE_MARKETPLACE_PAT }}
+          VSCE_PAT: ${{ secrets.VSCODE_MARKETPLACE_PAT }}
           VSIX: ${{ steps.pkg.outputs.vsix }}
         run: |
           set -euo pipefail
