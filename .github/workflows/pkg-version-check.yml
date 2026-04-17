@@ -30,34 +30,44 @@ jobs:
           fi
           PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || true)
           PACKAGE_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || true)
-          if [ -z "$PACKAGE_NAME" ] || [ -z "$PACKAGE_VERSION" ]; then
-            echo "::error::Failed to read name/version from package.json"
+          PUBLISHER=$(node -p "require('./package.json').publisher || ''" 2>/dev/null || true)
+          if [ -z "$PACKAGE_NAME" ] || [ -z "$PACKAGE_VERSION" ] || [ -z "$PUBLISHER" ]; then
+            echo "::error::Failed to read name/version/publisher from package.json"
             exit 1
           fi
           echo "name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "publisher=$PUBLISHER" >> "$GITHUB_OUTPUT"
+          echo "extension_id=${PUBLISHER}.${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Install vsce
         run: npm install -g @vscode/vsce
 
       - name: Check if package version exists in marketplace
         env:
-          PACKAGE_NAME: ${{ steps.pkg.outputs.name }}
+          EXTENSION_ID: ${{ steps.pkg.outputs.extension_id }}
           PACKAGE_VERSION: ${{ steps.pkg.outputs.version }}
         run: |
           set -euo pipefail
+          TMP_ERR=$(mktemp)
           set +e
-          RAW=$(vsce show "$PACKAGE_NAME" --json 2>/dev/null)
+          RAW=$(vsce show "$EXTENSION_ID" --json 2>"$TMP_ERR")
           RC=$?
           set -e
-          if [ $RC -ne 0 ] || [ -z "$RAW" ]; then
-            echo "Extension '$PACKAGE_NAME' not found on marketplace (first publish). OK."
-            exit 0
-          fi
+          ERR=$(cat "$TMP_ERR"); rm -f "$TMP_ERR"
 
-          PUBLISHED=$(echo "$RAW" | jq -r '.versions[].version' 2>/dev/null || true)
-          if echo "$PUBLISHED" | grep -Fxq "$PACKAGE_VERSION"; then
-            echo "::error::Version $PACKAGE_VERSION already exists on marketplace"
+          if [ $RC -ne 0 ] || [ -z "$RAW" ]; then
+            if echo "$ERR" | grep -qiE "not found|could not be found|no extension"; then
+              echo "Extension '$EXTENSION_ID' not on marketplace yet (first publish). OK."
+              exit 0
+            fi
+            echo "::error::vsce show failed for '$EXTENSION_ID': $ERR"
             exit 1
           fi
-          echo "Version $PACKAGE_VERSION is available to publish."
+
+          PUBLISHED=$(echo "$RAW" | jq -r '.versions[].version')
+          if echo "$PUBLISHED" | grep -Fxq "$PACKAGE_VERSION"; then
+            echo "::error::Version $PACKAGE_VERSION already exists on marketplace for $EXTENSION_ID"
+            exit 1
+          fi
+          echo "Version $PACKAGE_VERSION is available to publish for $EXTENSION_ID."

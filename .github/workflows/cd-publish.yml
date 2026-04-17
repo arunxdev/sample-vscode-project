@@ -57,12 +57,15 @@ jobs:
           fi
           PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || true)
           PACKAGE_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || true)
-          if [ -z "$PACKAGE_NAME" ] || [ -z "$PACKAGE_VERSION" ]; then
-            echo "::error::Failed to read name/version from package.json"
+          PUBLISHER=$(node -p "require('./package.json').publisher || ''" 2>/dev/null || true)
+          if [ -z "$PACKAGE_NAME" ] || [ -z "$PACKAGE_VERSION" ] || [ -z "$PUBLISHER" ]; then
+            echo "::error::Failed to read name/version/publisher from package.json"
             exit 1
           fi
           echo "name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "publisher=$PUBLISHER" >> "$GITHUB_OUTPUT"
+          echo "extension_id=${PUBLISHER}.${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
           echo "vsix=${PACKAGE_NAME}-${PACKAGE_VERSION}.vsix" >> "$GITHUB_OUTPUT"
 
       - name: Verify tag matches package.json version
