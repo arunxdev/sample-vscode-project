@@ -82,21 +82,28 @@ jobs:
 
       - name: Check VS Code Marketplace for existing version
         env:
-          PACKAGE_NAME: ${{ steps.pkg.outputs.name }}
+          EXTENSION_ID: ${{ steps.pkg.outputs.extension_id }}
           PACKAGE_VERSION: ${{ steps.pkg.outputs.version }}
         run: |
           set -euo pipefail
+          TMP_ERR=$(mktemp)
           set +e
-          RAW=$(vsce show "$PACKAGE_NAME" --json 2>/dev/null)
+          RAW=$(vsce show "$EXTENSION_ID" --json 2>"$TMP_ERR")
           RC=$?
           set -e
+          ERR=$(cat "$TMP_ERR"); rm -f "$TMP_ERR"
+
           if [ $RC -ne 0 ] || [ -z "$RAW" ]; then
-            echo "Extension '$PACKAGE_NAME' not on marketplace yet (first publish)."
-            exit 0
+            if echo "$ERR" | grep -qiE "not found|could not be found|no extension"; then
+              echo "Extension '$EXTENSION_ID' not on marketplace yet (first publish). OK."
+              exit 0
+            fi
+            echo "::error::vsce show failed for '$EXTENSION_ID': $ERR"
+            exit 1
           fi
-          PUBLISHED=$(echo "$RAW" | jq -r '.versions[].version' 2>/dev/null || true)
+          PUBLISHED=$(echo "$RAW" | jq -r '.versions[].version')
           if echo "$PUBLISHED" | grep -Fxq "$PACKAGE_VERSION"; then
-            echo "::error::Version $PACKAGE_VERSION already published to marketplace"
+            echo "::error::Version $PACKAGE_VERSION already published to marketplace for $EXTENSION_ID"
             exit 1
           fi
 
