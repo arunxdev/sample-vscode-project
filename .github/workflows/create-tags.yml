@@ -1,0 +1,107 @@
+name: "Create Tag for new dj version"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ignore_changes:
+        description: "Skip source code change detection and force tag creation"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version_tag: ${{ steps.version.outputs.version_tag }}
+
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: "Check for source code changes"
+        if: inputs.ignore_changes == false
+        id: check_changes
+        run: |
+          set -euo pipefail
+
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            CHANGED_FILES=$(git diff --name-only HEAD^ HEAD)
+          else
+            echo "Initial commit detected; treating all tracked files as changed."
+            CHANGED_FILES=$(git ls-tree -r --name-only HEAD)
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          SOURCE_CHANGES="$CHANGED_FILES"
+
+          if [ -f ".tagignore" ] && [ -s ".tagignore" ]; then
+            PATTERNS=$(grep -vE '^\s*(#|$)' .tagignore || true)
+            if [ -n "$PATTERNS" ]; then
+              SOURCE_CHANGES=$(echo "$CHANGED_FILES" | grep -Fv -f <(echo "$PATTERNS") || true)
+            fi
+          fi
+
+          if [ -z "$SOURCE_CHANGES" ]; then
+            echo "No source code changes detected. Skipping tag creation."
+            echo "should_tag=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Source code changes detected:"
+            echo "$SOURCE_CHANGES"
+            echo "should_tag=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Get version from package.json
+        if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
+        id: version
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then
+            echo "::error::package.json not found"
+            exit 1
+          fi
+          VERSION=$(node -p "require('./package.json').version" 2>/dev/null || true)
+          if [ -z "$VERSION" ] || [ "$VERSION" = "undefined" ]; then
+            echo "::error::Could not read version from package.json"
+            exit 1
+          fi
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+].+)?$'; then
+            echo "::error::Invalid semver '$VERSION' in package.json"
+            exit 1
+          fi
+          echo "version_tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Tag ${TAG} already exists locally"
+            exit 1
+          fi
+          if git ls-remote --tags --exit-code origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists on remote"
+            exit 1
+          fi
+          echo "Tag ${TAG} does not exist. Proceeding."
+
+      - name: "Tag new version"
+        if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "refs/tags/${TAG}"
