@@ -1,0 +1,81 @@
+name: Check if tag/package version exists in repository
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Check if tag/package version exists in repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Resolve package metadata
+        id: pkg
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then
+            echo "::error::package.json not found"
+            exit 1
+          fi
+          PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || true)
+          PACKAGE_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || true)
+          PUBLISHER=$(node -p "require('./package.json').publisher || ''" 2>/dev/null || true)
+          if [ -z "$PACKAGE_NAME" ] || [ -z "$PACKAGE_VERSION" ] || [ -z "$PUBLISHER" ]; then
+            echo "::error::Failed to read name/version/publisher from package.json"
+            exit 1
+          fi
+          echo "name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "publisher=$PUBLISHER" >> "$GITHUB_OUTPUT"
+          echo "extension_id=${PUBLISHER}.${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce --silent --no-fund --no-audit
+
+      - name: Check if package version exists in marketplace
+        env:
+          EXTENSION_ID: ${{ steps.pkg.outputs.extension_id }}
+          PACKAGE_VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          TMP_OUT=$(mktemp)
+          TMP_ERR=$(mktemp)
+          set +e
+          vsce show "$EXTENSION_ID" --json >"$TMP_OUT" 2>"$TMP_ERR"
+          RC=$?
+          set -e
+          ERR=$(cat "$TMP_ERR"); rm -f "$TMP_ERR"
+          RAW=$(sed -n '/^[[:space:]]*[{[]/,$p' "$TMP_OUT")
+          rm -f "$TMP_OUT"
+
+          if [ $RC -ne 0 ] || [ -z "$RAW" ]; then
+            if echo "$ERR" | grep -qiE "not found|could not be found|no extension"; then
+              echo "Extension '$EXTENSION_ID' not on marketplace yet (first publish). OK."
+              exit 0
+            fi
+            echo "::error::vsce show failed for '$EXTENSION_ID': $ERR"
+            exit 1
+          fi
+
+          if ! echo "$RAW" | jq -e . >/dev/null 2>&1; then
+            echo "::error::vsce show returned non-JSON output for '$EXTENSION_ID': $RAW"
+            exit 1
+          fi
+
+          PUBLISHED=$(echo "$RAW" | jq -r '.versions[].version')
+          if echo "$PUBLISHED" | grep -Fxq "$PACKAGE_VERSION"; then
+            echo "::error::Version $PACKAGE_VERSION already exists on marketplace for $EXTENSION_ID"
+            exit 1
+          fi
+          echo "Version $PACKAGE_VERSION is available to publish for $EXTENSION_ID."

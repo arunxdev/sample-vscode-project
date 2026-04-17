@@ -1,0 +1,187 @@
+name: Publish Extension to VS Code Marketplace
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.1.0)"
+        required: true
+        type: string
+
+concurrency:
+  group: publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: write
+    steps:
+      - name: Validate tag input format
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+].+)?$'; then
+            echo "::error::Invalid tag format '$TAG'. Expected 'vX.Y.Z'."
+            exit 1
+          fi
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+
+      - name: Resolve package metadata
+        id: pkg
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then
+            echo "::error::package.json not found at tag ${TAG}"
+            exit 1
+          fi
+          PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || true)
+          PACKAGE_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || true)
+          PUBLISHER=$(node -p "require('./package.json').publisher || ''" 2>/dev/null || true)
+          if [ -z "$PACKAGE_NAME" ] || [ -z "$PACKAGE_VERSION" ] || [ -z "$PUBLISHER" ]; then
+            echo "::error::Failed to read name/version/publisher from package.json"
+            exit 1
+          fi
+          echo "name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "publisher=$PUBLISHER" >> "$GITHUB_OUTPUT"
+          echo "extension_id=${PUBLISHER}.${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "vsix=${PACKAGE_NAME}-${PACKAGE_VERSION}.vsix" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package.json version
+        env:
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          EXPECTED="v${VERSION}"
+          if [ "$TAG" != "$EXPECTED" ]; then
+            echo "::error::Tag '$TAG' does not match package.json version '$EXPECTED'"
+            exit 1
+          fi
+
+      - name: Check VS Code Marketplace for existing version
+        env:
+          EXTENSION_ID: ${{ steps.pkg.outputs.extension_id }}
+          PACKAGE_VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          TMP_OUT=$(mktemp)
+          TMP_ERR=$(mktemp)
+          set +e
+          vsce show "$EXTENSION_ID" --json >"$TMP_OUT" 2>"$TMP_ERR"
+          RC=$?
+          set -e
+          ERR=$(cat "$TMP_ERR"); rm -f "$TMP_ERR"
+          RAW=$(sed -n '/^[[:space:]]*[{[]/,$p' "$TMP_OUT")
+          rm -f "$TMP_OUT"
+
+          if [ $RC -ne 0 ] || [ -z "$RAW" ]; then
+            if echo "$ERR" | grep -qiE "not found|could not be found|no extension"; then
+              echo "Extension '$EXTENSION_ID' not on marketplace yet (first publish)."
+              exit 0
+            fi
+            echo "::error::vsce show failed for '$EXTENSION_ID': $ERR"
+            exit 1
+          fi
+
+          if ! echo "$RAW" | jq -e . >/dev/null 2>&1; then
+            echo "::error::vsce show returned non-JSON output for '$EXTENSION_ID': $RAW"
+            exit 1
+          fi
+
+          PUBLISHED=$(echo "$RAW" | jq -r '.versions[].version')
+          if echo "$PUBLISHED" | grep -Fxq "$PACKAGE_VERSION"; then
+            echo "::error::Version $PACKAGE_VERSION already published to marketplace for $EXTENSION_ID"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::warning::package-lock.json not found; falling back to npm install"
+            npm install
+          fi
+
+      - name: Package extension
+        env:
+          VSIX: ${{ steps.pkg.outputs.vsix }}
+        run: |
+          set -euo pipefail
+          npm run package
+          if [ ! -f "$VSIX" ]; then
+            echo "::error::Expected VSIX '$VSIX' not produced by 'npm run package'"
+            ls -1 *.vsix 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCODE_MARKETPLACE_PAT }}
+          VSIX: ${{ steps.pkg.outputs.vsix }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VSCE_PAT:-}" ]; then
+            echo "::error::Marketplace PAT secret is missing"
+            exit 1
+          fi
+          vsce publish --no-dependencies --packagePath "./${VSIX}"
+
+      - name: Read changelog entry
+        id: changelog
+        continue-on-error: true
+        uses: mindsers/changelog-reader-action@v2
+        with:
+          version: ${{ steps.pkg.outputs.version }}
+          path: ./CHANGELOG.md
+
+      - name: Resolve release body
+        id: body
+        env:
+          CHANGES: ${{ steps.changelog.outputs.changes }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "body<<EOF"
+            if [ -n "${CHANGES:-}" ]; then
+              echo "$CHANGES"
+            else
+              echo "Release $TAG"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
+          body: ${{ steps.body.outputs.body }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: ./${{ steps.pkg.outputs.vsix }}
