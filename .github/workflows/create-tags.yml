@@ -114,6 +114,65 @@ jobs:
           fi
           echo "Tag ${TAG} does not exist. Proceeding."
 
+      - name: Install vsce
+        if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
+        run: npm install -g @vscode/vsce@^3.6 --silent --no-fund --no-audit
+
+      - name: Check marketplace version
+        if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME=$(node -p "require('./package.json').name || ''" 2>/dev/null || true)
+          PUBLISHER=$(node -p "require('./package.json').publisher || ''" 2>/dev/null || true)
+          if [ -z "$PACKAGE_NAME" ] || [ -z "$PUBLISHER" ]; then
+            echo "::error::Failed to read name/publisher from package.json"
+            exit 1
+          fi
+          EXTENSION_ID="${PUBLISHER}.${PACKAGE_NAME}"
+          PACKAGE_VERSION="${TAG#v}"
+
+          TMP_OUT=$(mktemp)
+          TMP_ERR=$(mktemp)
+          set +e
+          vsce show "$EXTENSION_ID" --json >"$TMP_OUT" 2>"$TMP_ERR"
+          RC=$?
+          set -e
+          ERR=$(cat "$TMP_ERR"); rm -f "$TMP_ERR"
+          RAW=$(sed -n '/^[[:space:]]*[{[]/,$p' "$TMP_OUT")
+          rm -f "$TMP_OUT"
+
+          if [ $RC -ne 0 ] || [ -z "$RAW" ]; then
+            if echo "$ERR" | grep -qiE "not found|could not be found|no extension"; then
+              echo "Extension '$EXTENSION_ID' not on marketplace yet (first publish). OK."
+              exit 0
+            fi
+            echo "::error::vsce show failed for '$EXTENSION_ID': $ERR"
+            exit 1
+          fi
+
+          if ! echo "$RAW" | jq -e . >/dev/null 2>&1; then
+            echo "::error::vsce show returned non-JSON output for '$EXTENSION_ID': $RAW"
+            exit 1
+          fi
+
+          PUBLISHED=$(echo "$RAW" | jq -r '.versions[].version')
+          if echo "$PUBLISHED" | grep -Fxq "$PACKAGE_VERSION"; then
+            echo "::error::Version $PACKAGE_VERSION already exists on marketplace for $EXTENSION_ID"
+            exit 1
+          fi
+
+          LATEST=$(echo "$PUBLISHED" | sort -V | tail -n1)
+          if [ -n "$LATEST" ]; then
+            HIGHER=$(printf '%s\n%s\n' "$LATEST" "$PACKAGE_VERSION" | sort -V | tail -n1)
+            if [ "$HIGHER" != "$PACKAGE_VERSION" ] || [ "$LATEST" = "$PACKAGE_VERSION" ]; then
+              echo "::error::Version $PACKAGE_VERSION must be greater than latest published $LATEST for $EXTENSION_ID"
+              exit 1
+            fi
+          fi
+          echo "Version $PACKAGE_VERSION is available to publish for $EXTENSION_ID (latest published: ${LATEST:-none})."
+
       - name: Tag new version
         if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
         env:
