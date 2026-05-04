@@ -2,38 +2,69 @@ name: Publish Extension to VS Code Marketplace
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag to publish (e.g. v0.1.0)"
-        required: true
-        type: string
 
 concurrency:
-  group: publish-${{ inputs.tag }}
+  group: publish
   cancel-in-progress: false
 
+permissions: {}
+
 jobs:
-  publish:
-    name: Publish ${{ inputs.tag }}
+  resolve:
+    name: Resolve tag from package.json
     runs-on: ubuntu-latest
-    environment: production
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      version: ${{ steps.r.outputs.version }}
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: r
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then
+            echo "::error::package.json not found on default branch"
+            exit 1
+          fi
+          VERSION=$(node -p "require('./package.json').version || ''" 2>/dev/null || true)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not read version from package.json"
+            exit 1
+          fi
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+].+)?$'; then
+            echo "::error::Invalid semver '$VERSION' in package.json"
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          if ! git rev-parse --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} not found in repo. Run create-tags workflow first."
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: ${TAG}"
+
+  publish:
+    needs: resolve
+    name: Publish ${{ needs.resolve.outputs.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: publish
     permissions:
       contents: write
     steps:
-      - name: Validate tag input format
-        env:
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+].+)?$'; then
-            echo "::error::Invalid tag format '$TAG'. Expected 'vX.Y.Z'."
-            exit 1
-          fi
-
       - name: Checkout tag
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: refs/tags/${{ needs.resolve.outputs.tag }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -43,20 +74,20 @@ jobs:
           cache: 'npm'
 
       - name: Install vsce
-        run: npm install -g @vscode/vsce
+        run: npm install -g @vscode/vsce@^3.6 --silent --no-fund --no-audit
 
       - name: Resolve package metadata
         id: pkg
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           if [ ! -f package.json ]; then
             echo "::error::package.json not found at tag ${TAG}"
             exit 1
           fi
-          PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || true)
-          PACKAGE_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || true)
+          PACKAGE_NAME=$(node -p "require('./package.json').name || ''" 2>/dev/null || true)
+          PACKAGE_VERSION=$(node -p "require('./package.json').version || ''" 2>/dev/null || true)
           PUBLISHER=$(node -p "require('./package.json').publisher || ''" 2>/dev/null || true)
           if [ -z "$PACKAGE_NAME" ] || [ -z "$PACKAGE_VERSION" ] || [ -z "$PUBLISHER" ]; then
             echo "::error::Failed to read name/version/publisher from package.json"
@@ -67,18 +98,6 @@ jobs:
           echo "publisher=$PUBLISHER" >> "$GITHUB_OUTPUT"
           echo "extension_id=${PUBLISHER}.${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
           echo "vsix=${PACKAGE_NAME}-${PACKAGE_VERSION}.vsix" >> "$GITHUB_OUTPUT"
-
-      - name: Verify tag matches package.json version
-        env:
-          TAG: ${{ inputs.tag }}
-          VERSION: ${{ steps.pkg.outputs.version }}
-        run: |
-          set -euo pipefail
-          EXPECTED="v${VERSION}"
-          if [ "$TAG" != "$EXPECTED" ]; then
-            echo "::error::Tag '$TAG' does not match package.json version '$EXPECTED'"
-            exit 1
-          fi
 
       - name: Check VS Code Marketplace for existing version
         env:
@@ -138,6 +157,14 @@ jobs:
             exit 1
           fi
 
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.vsix }}
+          path: ./${{ steps.pkg.outputs.vsix }}
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Publish to VS Code Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCODE_MARKETPLACE_PAT }}
@@ -153,7 +180,7 @@ jobs:
       - name: Read changelog entry
         id: changelog
         continue-on-error: true
-        uses: mindsers/changelog-reader-action@v2
+        uses: mindsers/changelog-reader-action@32aa5b4c155d76c94e4ec883a223c947b2f02656  # v2.2.3
         with:
           version: ${{ steps.pkg.outputs.version }}
           path: ./CHANGELOG.md
@@ -162,7 +189,7 @@ jobs:
         id: body
         env:
           CHANGES: ${{ steps.changelog.outputs.changes }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           {
@@ -176,10 +203,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
-          tag_name: ${{ inputs.tag }}
-          name: ${{ inputs.tag }}
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          name: ${{ needs.resolve.outputs.tag }}
           body: ${{ steps.body.outputs.body }}
           draft: false
           prerelease: false
