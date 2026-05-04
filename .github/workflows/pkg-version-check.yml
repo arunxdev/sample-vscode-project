@@ -5,10 +5,13 @@ on:
     branches:
       - main
 
+permissions: {}
+
 jobs:
   build:
     name: Check if tag/package version exists in repository
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -28,8 +31,8 @@ jobs:
             echo "::error::package.json not found"
             exit 1
           fi
-          PACKAGE_NAME=$(node -p "require('./package.json').name" 2>/dev/null || true)
-          PACKAGE_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || true)
+          PACKAGE_NAME=$(node -p "require('./package.json').name || ''" 2>/dev/null || true)
+          PACKAGE_VERSION=$(node -p "require('./package.json').version || ''" 2>/dev/null || true)
           PUBLISHER=$(node -p "require('./package.json').publisher || ''" 2>/dev/null || true)
           if [ -z "$PACKAGE_NAME" ] || [ -z "$PACKAGE_VERSION" ] || [ -z "$PUBLISHER" ]; then
             echo "::error::Failed to read name/version/publisher from package.json"
@@ -41,7 +44,7 @@ jobs:
           echo "extension_id=${PUBLISHER}.${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Install vsce
-        run: npm install -g @vscode/vsce --silent --no-fund --no-audit
+        run: npm install -g @vscode/vsce@^3.6 --silent --no-fund --no-audit
 
       - name: Check if package version exists in marketplace
         env:
@@ -78,4 +81,13 @@ jobs:
             echo "::error::Version $PACKAGE_VERSION already exists on marketplace for $EXTENSION_ID"
             exit 1
           fi
-          echo "Version $PACKAGE_VERSION is available to publish for $EXTENSION_ID."
+
+          LATEST=$(echo "$PUBLISHED" | sort -V | tail -n1)
+          if [ -n "$LATEST" ]; then
+            HIGHER=$(printf '%s\n%s\n' "$LATEST" "$PACKAGE_VERSION" | sort -V | tail -n1)
+            if [ "$HIGHER" != "$PACKAGE_VERSION" ] || [ "$LATEST" = "$PACKAGE_VERSION" ]; then
+              echo "::error::Version $PACKAGE_VERSION must be greater than latest published $LATEST for $EXTENSION_ID"
+              exit 1
+            fi
+          fi
+          echo "Version $PACKAGE_VERSION is available to publish for $EXTENSION_ID (latest published: ${LATEST:-none})."

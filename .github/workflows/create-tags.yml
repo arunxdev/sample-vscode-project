@@ -1,4 +1,4 @@
-name: "Create Tag for new dj version"
+name: Create Tag for new dj version
 
 on:
   workflow_dispatch:
@@ -9,9 +9,16 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: create-tag
+  cancel-in-progress: false
+
+permissions: {}
+
 jobs:
   create-tag:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     outputs:
@@ -19,15 +26,17 @@ jobs:
 
     if: github.ref == 'refs/heads/main'
     steps:
-      - name: "Checkout code"
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Setup node
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: "Check for source code changes"
+
+      - name: Check for source code changes
         if: inputs.ignore_changes == false
         id: check_changes
         run: |
@@ -46,9 +55,17 @@ jobs:
           SOURCE_CHANGES="$CHANGED_FILES"
 
           if [ -f ".tagignore" ] && [ -s ".tagignore" ]; then
-            PATTERNS=$(grep -vE '^\s*(#|$)' .tagignore || true)
+            PATTERNS=$(grep -vE '^[[:space:]]*(#|$)' .tagignore || true)
             if [ -n "$PATTERNS" ]; then
-              SOURCE_CHANGES=$(echo "$CHANGED_FILES" | grep -Fv -f <(echo "$PATTERNS") || true)
+              ESC() { sed -E 's:[][/.^$*+?(){}|\\]:\\&:g'; }
+              DIRS=$(printf '%s\n' "$PATTERNS" | grep '/$' | sed 's:/$::' | ESC | paste -sd '|' -)
+              FILES=$(printf '%s\n' "$PATTERNS" | grep -v '/$' | ESC | paste -sd '|' -)
+              REGEX=""
+              [ -n "$FILES" ] && REGEX="^(${FILES})$"
+              [ -n "$DIRS" ]  && REGEX="${REGEX:+$REGEX|}^(${DIRS})/"
+              if [ -n "$REGEX" ]; then
+                SOURCE_CHANGES=$(echo "$CHANGED_FILES" | grep -vE "$REGEX" || true)
+              fi
             fi
           fi
 
@@ -97,13 +114,15 @@ jobs:
           fi
           echo "Tag ${TAG} does not exist. Proceeding."
 
-      - name: "Tag new version"
+      - name: Tag new version
         if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
         env:
           TAG: ${{ steps.version.outputs.version_tag }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions-bot"
-          git config user.email "github-actions-bot@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release $TAG"
+          git config user.name "$ACTOR"
+          git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG (triggered by $ACTOR)"
           git push origin "refs/tags/${TAG}"
