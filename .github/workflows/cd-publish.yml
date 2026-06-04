@@ -1,4 +1,4 @@
-name: Publish DJ Extension to VS Code Marketplace
+name: Publish DJ to Marketplace
 run-name: Publish v${{ inputs.version }}
 
 on:
