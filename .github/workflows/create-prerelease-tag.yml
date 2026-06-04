@@ -141,6 +141,25 @@ jobs:
           fi
           echo "No existing release for $TAG. Proceeding."
 
+      - name: Enforce higher-than-all-github-releases
+        if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          LATEST_REL=$(gh release list --limit 200 --json tagName \
+            | jq -r '.[] | .tagName' \
+            | sed 's/^v//' | sort -V | tail -n1)
+          if [ -n "$LATEST_REL" ]; then
+            HIGHER=$(printf '%s\n%s\n' "$LATEST_REL" "$VERSION" | sort -V | tail -n1)
+            if [ "$HIGHER" != "$VERSION" ] || [ "$VERSION" = "$LATEST_REL" ]; then
+              echo "::error::Pre-release $VERSION must be greater than the latest GitHub release $LATEST_REL"
+              exit 1
+            fi
+          fi
+          echo "Pre-release $VERSION is valid (latest GitHub release: ${LATEST_REL:-none})."
+
       - name: Install vsce
         if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
         run: npm install -g @vscode/vsce@^3.6 --silent --no-fund --no-audit
@@ -151,6 +170,9 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
+          # Read-only backstop. Pre-releases are NEVER published to the Marketplace
+          # (only stable is). This queries the Marketplace as the source of truth for
+          # the latest stable and enforces that the pre-release outranks it.
           PACKAGE_NAME=$(node -p "require('./package.json').name || ''" 2>/dev/null || true)
           PUBLISHER=$(node -p "require('./package.json').publisher || ''" 2>/dev/null || true)
           if [ -z "$PACKAGE_NAME" ] || [ -z "$PUBLISHER" ]; then
@@ -159,7 +181,6 @@ jobs:
           fi
           EXTENSION_ID="${PUBLISHER}.${PACKAGE_NAME}"
           PACKAGE_VERSION="$VERSION"
-          MINOR=$(echo "$PACKAGE_VERSION" | cut -d. -f2)
 
           TMP_OUT=$(mktemp)
           TMP_ERR=$(mktemp)
@@ -191,12 +212,15 @@ jobs:
             exit 1
           fi
 
-          LATEST_STABLE_MINOR=$(echo "$PUBLISHED" | sort -V | tail -n1 | cut -d. -f2)
-          if [ -n "$LATEST_STABLE_MINOR" ] && [ "$MINOR" -le "$LATEST_STABLE_MINOR" ]; then
-            echo "::error::Pre-release minor $MINOR must be greater than latest stable minor $LATEST_STABLE_MINOR"
-            exit 1
+          LATEST_STABLE=$(echo "$PUBLISHED" | sort -V | tail -n1)
+          if [ -n "$LATEST_STABLE" ]; then
+            HIGHER=$(printf '%s\n%s\n' "$LATEST_STABLE" "$PACKAGE_VERSION" | sort -V | tail -n1)
+            if [ "$HIGHER" != "$PACKAGE_VERSION" ] || [ "$PACKAGE_VERSION" = "$LATEST_STABLE" ]; then
+              echo "::error::Pre-release $PACKAGE_VERSION must be strictly greater than the latest Marketplace release $LATEST_STABLE. VS Code auto-updates users to the highest available version, so a pre-release must outrank every published release (https://code.visualstudio.com/api/working-with-extensions/publishing-extension#prerelease-extensions)."
+              exit 1
+            fi
           fi
-          echo "Pre-release minor $MINOR is valid (latest stable minor: ${LATEST_STABLE_MINOR:-none})."
+          echo "Pre-release $PACKAGE_VERSION is valid (latest Marketplace release: ${LATEST_STABLE:-none})."
 
       - name: Tag new version
         if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
