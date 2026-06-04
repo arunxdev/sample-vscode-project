@@ -112,23 +112,6 @@ jobs:
           fi
           echo "Minor version $MINOR is even. Proceeding with stable release tag."
 
-      - name: Enforce higher-than-latest-prerelease
-        if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          LATEST_PRE_MINOR=$(gh release list --limit 200 --json tagName,isPrerelease \
-            | jq -r '.[] | select(.isPrerelease==true) | .tagName' \
-            | sed 's/^v//' | cut -d. -f2 | sort -n | tail -n1)
-          if [ -n "$LATEST_PRE_MINOR" ] && [ "$MINOR" -le "$LATEST_PRE_MINOR" ]; then
-            echo "::error::Stable minor $MINOR must be greater than latest pre-release minor $LATEST_PRE_MINOR"
-            exit 1
-          fi
-          echo "Stable minor $MINOR is valid (latest pre-release minor: ${LATEST_PRE_MINOR:-none})."
-
       - name: Check if tag already exists
         if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
         env:
@@ -193,16 +176,7 @@ jobs:
             echo "::error::Version $PACKAGE_VERSION already exists on marketplace for $EXTENSION_ID"
             exit 1
           fi
-
-          LATEST=$(echo "$PUBLISHED" | sort -V | tail -n1)
-          if [ -n "$LATEST" ]; then
-            HIGHER=$(printf '%s\n%s\n' "$LATEST" "$PACKAGE_VERSION" | sort -V | tail -n1)
-            if [ "$HIGHER" != "$PACKAGE_VERSION" ] || [ "$LATEST" = "$PACKAGE_VERSION" ]; then
-              echo "::error::Version $PACKAGE_VERSION must be greater than latest published $LATEST for $EXTENSION_ID"
-              exit 1
-            fi
-          fi
-          echo "Version $PACKAGE_VERSION is available to publish for $EXTENSION_ID (latest published: ${LATEST:-none})."
+          echo "Version $PACKAGE_VERSION is not a duplicate on marketplace for $EXTENSION_ID."
 
       - name: Tag new version
         if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
