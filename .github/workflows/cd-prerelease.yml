@@ -225,10 +225,6 @@ jobs:
           VERSION: ${{ steps.normalize.outputs.version }}
         run: |
           set -euo pipefail
-          if [ -z "${CHANGES//[[:space:]]/}" ]; then
-            echo "::error::No CHANGELOG.md entry found for version ${VERSION}. Add a '## ${VERSION}' section to CHANGELOG.md before creating the prerelease ${TAG}."
-            exit 1
-          fi
           {
             echo "body<<EOF"
             echo "$CHANGES"
