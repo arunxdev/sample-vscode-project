@@ -1,4 +1,5 @@
-name: Publish Extension to VS Code Marketplace
+name: Publish DJ Extension to VS Code Marketplace
+
 run-name: Publish v${{ inputs.version }}
 
 on:
@@ -20,7 +21,6 @@ jobs:
     name: Publish v${{ inputs.version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: publish
     permissions:
       contents: write
     steps:

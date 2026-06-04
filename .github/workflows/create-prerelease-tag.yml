@@ -1,4 +1,4 @@
-name: Create-prerelease-tag
+name: Create Prerelease tag for DJ Extension
 
 on:
   workflow_dispatch:

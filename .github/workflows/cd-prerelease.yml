@@ -1,4 +1,4 @@
-name: Prerelease Extension to GitHub
+name: Publish DJ Extension to GitHub PreRelease
 
 run-name: Prerelease ${{ inputs.tag }}
 
