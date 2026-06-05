@@ -1,4 +1,4 @@
-name: Create release tag for DJ Extension
+name: Create tag for DJ Extension
 
 on:
   workflow_dispatch:
@@ -135,7 +135,7 @@ jobs:
       - name: Check marketplace version
         if: inputs.ignore_changes == true || steps.check_changes.outputs.should_tag == 'true'
         env:
-          TAG: ${{ steps.version.outputs.version_tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           PACKAGE_NAME=$(node -p "require('./package.json').name || ''" 2>/dev/null || true)
@@ -145,7 +145,7 @@ jobs:
             exit 1
           fi
           EXTENSION_ID="${PUBLISHER}.${PACKAGE_NAME}"
-          PACKAGE_VERSION="${TAG#v}"
+          PACKAGE_VERSION="$VERSION"
 
           TMP_OUT=$(mktemp)
           TMP_ERR=$(mktemp)
@@ -159,7 +159,7 @@ jobs:
 
           if [ $RC -ne 0 ] || [ -z "$RAW" ]; then
             if echo "$ERR" | grep -qiE "not found|could not be found|no extension"; then
-              echo "Extension '$EXTENSION_ID' not on marketplace yet (first publish). OK."
+              echo "Extension '$EXTENSION_ID' not on marketplace yet. OK."
               exit 0
             fi
             echo "::error::vsce show failed for '$EXTENSION_ID': $ERR"
@@ -188,5 +188,5 @@ jobs:
           set -euo pipefail
           git config user.name "$ACTOR"
           git config user.email "${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release $TAG (triggered by $ACTOR)"
+          git tag -a "$TAG" -m "Tag $TAG (triggered by $ACTOR)"
           git push origin "refs/tags/${TAG}"
