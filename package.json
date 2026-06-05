@@ -2,7 +2,7 @@
   "name": "sample-hello",
   "displayName": "santhosh Kumar publish",
   "description": "Hello World VS Code extension to test publishing",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "santhoshKumar-test-vscode",
   "license": "MIT",
   "engines": {
