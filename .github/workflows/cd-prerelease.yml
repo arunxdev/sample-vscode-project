@@ -38,18 +38,6 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "version_tag=v${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Validate minor version is odd
-        env:
-          VERSION: ${{ steps.normalize.outputs.version }}
-        run: |
-          set -euo pipefail
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          if [ $((MINOR % 2)) -eq 0 ]; then
-            echo "::error::Minor version $MINOR is even. Even minor versions are not eligible for prerelease. Use an odd minor version (e.g. 0.3.x)."
-            exit 1
-          fi
-          echo "Minor version $MINOR is odd. Proceeding with prerelease."
-
       - name: Checkout tag
         uses: actions/checkout@v4
         with:
@@ -99,15 +87,27 @@ jobs:
             exit 1
           fi
 
-      - name: Check marketplace and enforce higher-than-stable
+      - name: Check for existing GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.normalize.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::A GitHub Release for tag $TAG already exists. Refusing to create a duplicate."
+            exit 1
+          fi
+          echo "No existing release for $TAG. Proceeding."
+
+      - name: Check marketplace for existing version
         env:
           EXTENSION_ID: ${{ steps.pkg.outputs.extension_id }}
           PACKAGE_VERSION: ${{ steps.pkg.outputs.version }}
         run: |
           set -euo pipefail
-          # Read-only backstop. Pre-releases are NEVER published to the Marketplace
-          # (only stable is). This queries the Marketplace as the source of truth for
-          # the latest stable and enforces that the pre-release outranks it.
+          # Read-only duplicate backstop. Pre-releases are NEVER published to the
+          # Marketplace (only stable is); this just fails if the version already
+          # exists on the Marketplace.
 
           TMP_OUT=$(mktemp)
           TMP_ERR=$(mktemp)
@@ -121,7 +121,7 @@ jobs:
 
           if [ $RC -ne 0 ] || [ -z "$RAW" ]; then
             if echo "$ERR" | grep -qiE "not found|could not be found|no extension"; then
-              echo "Extension '$EXTENSION_ID' not on marketplace yet (no stable release). Proceeding."
+              echo "Extension '$EXTENSION_ID' not on marketplace yet. Proceeding."
               exit 0
             fi
             echo "::error::vsce show failed for '$EXTENSION_ID': $ERR"
@@ -138,46 +138,7 @@ jobs:
             echo "::error::Version $PACKAGE_VERSION already published to marketplace for $EXTENSION_ID"
             exit 1
           fi
-
-          LATEST_STABLE=$(echo "$PUBLISHED" | sort -V | tail -n1)
-          if [ -n "$LATEST_STABLE" ]; then
-            HIGHER=$(printf '%s\n%s\n' "$LATEST_STABLE" "$PACKAGE_VERSION" | sort -V | tail -n1)
-            if [ "$HIGHER" != "$PACKAGE_VERSION" ] || [ "$PACKAGE_VERSION" = "$LATEST_STABLE" ]; then
-              echo "::error::Pre-release $PACKAGE_VERSION must be strictly greater than the latest Marketplace release $LATEST_STABLE. VS Code auto-updates users to the highest available version, so a pre-release must outrank every published release (https://code.visualstudio.com/api/working-with-extensions/publishing-extension#prerelease-extensions)."
-              exit 1
-            fi
-          fi
-          echo "Pre-release $PACKAGE_VERSION is valid (latest Marketplace release: ${LATEST_STABLE:-none})."
-
-      - name: Check for existing GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.normalize.outputs.version_tag }}
-        run: |
-          set -euo pipefail
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::A GitHub Release for tag $TAG already exists. Refusing to create a duplicate."
-            exit 1
-          fi
-          echo "No existing release for $TAG. Proceeding."
-
-      - name: Enforce higher-than-all-github-releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.normalize.outputs.version }}
-        run: |
-          set -euo pipefail
-          LATEST_REL=$(gh release list --limit 200 --json tagName \
-            | jq -r '.[] | .tagName' \
-            | sed 's/^v//' | sort -V | tail -n1)
-          if [ -n "$LATEST_REL" ]; then
-            HIGHER=$(printf '%s\n%s\n' "$LATEST_REL" "$VERSION" | sort -V | tail -n1)
-            if [ "$HIGHER" != "$VERSION" ] || [ "$VERSION" = "$LATEST_REL" ]; then
-              echo "::error::Pre-release $VERSION must be greater than the latest GitHub release $LATEST_REL"
-              exit 1
-            fi
-          fi
-          echo "Pre-release $VERSION is valid (latest GitHub release: ${LATEST_REL:-none})."
+          echo "Version $PACKAGE_VERSION is not a duplicate on marketplace for $EXTENSION_ID."
 
       - name: Install dependencies
         run: |
@@ -225,6 +186,10 @@ jobs:
           VERSION: ${{ steps.normalize.outputs.version }}
         run: |
           set -euo pipefail
+          if [ -z "${CHANGES//[[:space:]]/}" ]; then
+            echo "::error::No CHANGELOG.md entry found for version ${VERSION}. Add a '## ${VERSION}' section to CHANGELOG.md before creating the prerelease ${TAG}."
+            exit 1
+          fi
           {
             echo "body<<EOF"
             echo "$CHANGES"
