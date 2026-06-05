@@ -33,18 +33,6 @@ jobs:
             exit 1
           fi
 
-      - name: Validate minor version is even
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          if [ $((MINOR % 2)) -ne 0 ]; then
-            echo "::error::Minor version $MINOR is odd. Stable releases require an even minor version; odd minors are reserved for prereleases."
-            exit 1
-          fi
-          echo "Minor version $MINOR is even. Proceeding with stable publish."
-
       - name: Checkout tag
         uses: actions/checkout@v4
         with:
@@ -93,6 +81,18 @@ jobs:
             echo "::error::Input version '$INPUT_VERSION' does not match package.json version '$PKG_VERSION'"
             exit 1
           fi
+
+      - name: Check for existing GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::A GitHub Release for tag $TAG already exists. Refusing to publish a duplicate version."
+            exit 1
+          fi
+          echo "No existing release for $TAG. Proceeding."
 
       - name: Check VS Code Marketplace for existing version
         env:
